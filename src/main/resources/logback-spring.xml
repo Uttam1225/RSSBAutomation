@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!-- ── Properties ──────────────────────────────────────────────────── -->
+    <property name="LOG_DIR"     value="logs" />
+    <property name="APP_NAME"    value="paper-generator" />
+    <property name="LOG_PATTERN" value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n" />
+
+    <!-- ── Console appender ────────────────────────────────────────────── -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %highlight(%-5level) %cyan(%logger{30}) - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ── Main rolling file appender ─────────────────────────────────── -->
+    <appender name="FILE_ALL" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/${APP_NAME}.log</file>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <!-- Daily rollover, keep 90 days -->
+            <fileNamePattern>${LOG_DIR}/archive/${APP_NAME}.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <timeBasedFileNamingAndTriggeringPolicy
+                    class="ch.qos.logback.core.rolling.SizeAndTimeBasedFNATP">
+                <maxFileSize>10MB</maxFileSize>
+            </timeBasedFileNamingAndTriggeringPolicy>
+            <maxHistory>90</maxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <!-- ── Error-only rolling file appender ───────────────────────────── -->
+    <appender name="FILE_ERROR" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/${APP_NAME}-error.log</file>
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>ERROR</level>
+        </filter>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/archive/${APP_NAME}-error.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+            <maxHistory>90</maxHistory>
+        </rollingPolicy>
+    </appender>
+
+    <!-- ── API calls log (controllers only) ───────────────────────────── -->
+    <appender name="FILE_API" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/${APP_NAME}-api.log</file>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/archive/${APP_NAME}-api.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+            <maxHistory>30</maxHistory>
+        </rollingPolicy>
+    </appender>
+
+    <!-- ── Generation audit log ───────────────────────────────────────── -->
+    <appender name="FILE_GENERATION" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/${APP_NAME}-generation.log</file>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/archive/${APP_NAME}-generation.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+            <maxHistory>90</maxHistory>
+        </rollingPolicy>
+    </appender>
+
+    <!-- ── Async wrappers (non-blocking I/O for file appenders) ───────── -->
+    <appender name="ASYNC_ALL" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="FILE_ALL" />
+        <queueSize>512</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+    </appender>
+
+    <appender name="ASYNC_ERROR" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="FILE_ERROR" />
+        <queueSize>128</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+    </appender>
+
+    <!-- ── Logger: controllers → API log ──────────────────────────────── -->
+    <logger name="com.uttam.paper.controller" level="INFO" additivity="true">
+        <appender-ref ref="FILE_API" />
+    </logger>
+
+    <!-- ── Logger: AOP aspect → generation log ────────────────────────── -->
+    <logger name="com.uttam.paper.aspect" level="INFO" additivity="true">
+        <appender-ref ref="FILE_GENERATION" />
+    </logger>
+
+    <!-- ── Logger: Gemini + generation services ───────────────────────── -->
+    <logger name="com.uttam.paper.service.GeminiService"         level="INFO" />
+    <logger name="com.uttam.paper.service.QuestionPaperService"  level="INFO" />
+    <logger name="com.uttam.paper.service.QuestionHistoryService" level="INFO" />
+    <logger name="com.uttam.paper.service.SchedulerService"      level="INFO" />
+    <logger name="com.uttam.paper.service.PdfService"            level="INFO" />
+
+    <!-- ── Spring Retry verbose logging ───────────────────────────────── -->
+    <logger name="org.springframework.retry" level="DEBUG" />
+
+    <!-- ── Suppress noisy framework loggers ───────────────────────────── -->
+    <logger name="org.springframework"       level="WARN" />
+    <logger name="org.apache.pdfbox"         level="WARN" />
+    <logger name="org.hibernate"             level="WARN" />
+
+    <!-- ── Root logger ────────────────────────────────────────────────── -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"     />
+        <appender-ref ref="ASYNC_ALL"   />
+        <appender-ref ref="ASYNC_ERROR" />
+    </root>
+
+</configuration>

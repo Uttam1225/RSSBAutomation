@@ -1,0 +1,27 @@
+# Maven build output
+target/
+
+# Logs
+logs/
+*.log
+
+# Generated output (PDFs, history)
+output/papers/*.pdf
+output/papers/previous_questions.json
+output/papers/executed-dates.log
+
+# Sensitive config (contains API key)
+src/main/resources/config.properties
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.class
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Keep output directory structure
+!output/papers/.gitkeep

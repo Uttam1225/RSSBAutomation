@@ -1,0 +1,12 @@
+# Gemini API Configuration
+gemini.api.key=YOUR_GEMINI_API_KEY_HERE
+gemini.api.url=https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent
+
+# Output Directory
+output.dir=output/papers
+
+# Scheduler Cron Expression (default: every day at 8:00 AM)
+schedule.cron=0 0 8 * * *
+
+# Duration in Days
+duration.days=90
