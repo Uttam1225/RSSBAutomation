@@ -66,33 +66,49 @@ public class QuestionPaperService {
         log.info("NotificationData loaded: {}", notification.getTitle());
 
         List<QuestionPaper> allPapers = new ArrayList<>();
+        List<Integer> failedSets     = new ArrayList<>();
 
-        // Steps 2–4 — Generate each set separately, save PDF immediately
+        // Steps 2–4 — Generate each set separately; a single set failure is non-fatal
         for (int setNumber = 1; setNumber <= 4; setNumber++) {
             log.info("=== Generating Set {} ===", setNumber);
-            QuestionPaper paper = generateSingleSet(notification, setNumber);
-            allPapers.add(paper);
-
-            // Save PDF immediately so it's not lost if a later set fails
             try {
-                Path pdfPath = pdfService.generatePdf(paper);
-                log.info("Set {} PDF saved immediately: {}", setNumber, pdfPath.getFileName());
-            } catch (IOException e) {
-                log.error("Set {} PDF save failed (non-fatal): {}", setNumber, e.getMessage(), e);
+                QuestionPaper paper = generateSingleSet(notification, setNumber);
+                allPapers.add(paper);
+
+                // Save PDF immediately so it's not lost if a later set fails
+                try {
+                    Path pdfPath = pdfService.generatePdf(paper);
+                    log.info("Set {} PDF saved: {}", setNumber, pdfPath.getFileName());
+                } catch (IOException e) {
+                    log.error("Set {} PDF save failed (non-fatal): {}", setNumber, e.getMessage(), e);
+                }
+            } catch (PaperGenerationException e) {
+                log.warn("Set {} failed and will be skipped: {}", setNumber, e.getMessage());
+                failedSets.add(setNumber);
             }
+        }
+
+        // Fail only if NO sets were produced at all
+        if (allPapers.isEmpty()) {
+            throw new PaperGenerationException(
+                    "All 4 sets failed to generate. Sets failed: " + failedSets);
+        }
+
+        if (!failedSets.isEmpty()) {
+            log.warn("Generation partially complete — failed sets: {}. Successful: {}/4",
+                    failedSets, allPapers.size());
         }
 
         // Step 5 — Save questions to history (uniqueness check)
         List<String> questionTexts = questionParser.extractAllQuestionTexts(allPapers);
-        log.info("Total questions across all sets: {}", questionTexts.size());
+        log.info("Total questions across {} set(s): {}", allPapers.size(), questionTexts.size());
 
         boolean saved = questionHistoryService.saveIfAllUnique(questionTexts);
         if (!saved) {
-            // PDFs are already saved — just warn, do not throw
             log.warn("Some questions overlap with history. PDFs already saved. History not updated.");
         }
 
-        log.info("=== Generation complete: {} sets, {} questions ===",
+        log.info("=== Generation complete: {}/4 sets, {} questions ===",
                 allPapers.size(), questionTexts.size());
         return allPapers;
     }

@@ -178,15 +178,18 @@ public class SchedulerService {
             return Collections.emptyList();
         }
 
-        // Generate — throws PaperGenerationException on total failure
+        // Generate — only throws PaperGenerationException if ALL sets fail (0 produced)
         List<QuestionPaper> papers = questionPaperService.generateDailyPapers();
 
-        // Mark executed only on success
-        try {
-            markExecuted(date);
-            log.info("Date {} recorded in execution log.", date);
-        } catch (IOException e) {
-            log.error("Failed to record execution date {}: {}", date, e.getMessage(), e);
+        // Mark executed as long as at least 1 set was saved
+        if (!papers.isEmpty()) {
+            try {
+                markExecuted(date);
+                log.info("Date {} recorded in execution log ({}/4 sets generated).",
+                        date, papers.size());
+            } catch (IOException e) {
+                log.error("Failed to record execution date {}: {}", date, e.getMessage(), e);
+            }
         }
 
         return papers;
