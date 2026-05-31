@@ -61,16 +61,21 @@ jobs:
       # ── Wait for app to be ready ──────────────────────────────────────────────
       - name: Wait for app startup
         run: |
-          echo "Waiting for app to start..."
+          echo "Waiting for app to start (up to 90s)..."
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8080/actuator/health > /dev/null 2>&1; then
-              echo "App is ready!"
+              echo "App is ready after $((i*3))s!"
               break
             fi
+            echo "  attempt $i/30..."
             sleep 3
           done
-          # Fallback check
-          curl -sf http://localhost:8080/actuator/health || (cat app.log && exit 1)
+          # Final check — print app log if not ready
+          if ! curl -sf http://localhost:8080/actuator/health > /dev/null 2>&1; then
+            echo "=== App failed to start. Log: ==="
+            cat app.log
+            exit 1
+          fi
 
       # ── Upload notification PDF ───────────────────────────────────────────────
       - name: Upload RSSB notification
