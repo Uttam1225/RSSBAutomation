@@ -2,6 +2,7 @@ package com.uttam.paper.service;
 
 import com.uttam.paper.config.ConfigLoader;
 import com.uttam.paper.model.Language;
+import com.uttam.paper.model.PaperType;
 import com.uttam.paper.model.Question;
 import com.uttam.paper.model.QuestionPaper;
 import lombok.RequiredArgsConstructor;
@@ -130,7 +131,11 @@ public class PdfService {
 
     private void writeHeader(PageWriter pw, QuestionPaper paper,
                               PDFont bold, PDFont regular) throws IOException {
-        String dateStr = LocalDate.now().format(PRINT_DATE_FMT);
+        String dateStr   = LocalDate.now().format(PRINT_DATE_FMT);
+        String roleLabel = capitalize(paper.getCategory().name());          // Junior / Senior
+        String typeLabel = paper.getPaperType() == null ? ""
+                : (paper.getPaperType() == com.uttam.paper.model.PaperType.TECHNICAL
+                        ? "Technical" : "Non-Technical");
 
         pw.drawHRule();
         pw.newLine(4);
@@ -139,8 +144,8 @@ public class PdfService {
         pw.writeCentered("COMPETITIVE EXAMINATION — QUESTION PAPER", bold, SIZE_HEADING);
         pw.newLine(LEAD_HEADING);
         pw.writeCentered("SET " + paper.getSetNumber()
-                + "  |  " + paper.getCategory().name()
-                + " LEVEL  |  " + dateStr, regular, SIZE_BODY);
+                + "  |  " + roleLabel + " — " + typeLabel
+                + "  |  " + dateStr, regular, SIZE_BODY);
         pw.newLine(LEAD_BODY + 4);
         pw.drawHRule();
         pw.newLine(LEAD_BODY);
@@ -168,7 +173,7 @@ public class PdfService {
             "1. This paper contains 100 Multiple Choice Questions (MCQs).",
             "2. Each question carries 1 mark. There is negative marking of 1/3 mark for each wrong answer.",
             "3. Do NOT mark more than one option per question.",
-            "4. Section A contains Junior Level questions (Q1–Q50). Section B contains Senior Level questions (Q51–Q100).",
+            "4. All 100 questions (Q1–Q100) are of the same role and type as indicated on the cover.",
             "5. Each question is printed in BILINGUAL format — English first, Hindi immediately below.",
             "6. Answer based on either English or Hindi version — both are identical in meaning.",
             "7. Use Blue/Black ballpoint pen only. Pencil is NOT allowed.",
@@ -197,22 +202,15 @@ public class PdfService {
         List<Question> hinQuestions = paper.getQuestions().stream()
                 .filter(q -> q.getLanguage() == Language.HIN).collect(Collectors.toList());
 
-        // Determine Junior/Senior split (first 50 = Junior, next 50 = Senior)
-        int juniorCount = Math.min(50, enQuestions.size());
-
-        // — Junior Section —
-        pw.writeLine("SECTION A — JUNIOR LEVEL  (Q1–Q50)", bold, SIZE_HEADING);
+        // Single section — all 100 questions for this role and type
+        String roleLabel = capitalize(paper.getCategory().name());
+        String typeLabel = paper.getPaperType() == null ? ""
+                : (paper.getPaperType() == com.uttam.paper.model.PaperType.TECHNICAL
+                        ? "Technical" : "Non-Technical");
+        pw.writeLine("SECTION A — " + roleLabel.toUpperCase() + " — " + typeLabel.toUpperCase()
+                + "  (Q1–Q" + enQuestions.size() + ")", bold, SIZE_HEADING);
         pw.newLine(LEAD_HEADING);
-        writePairedBlock(pw, enQuestions, hinQuestions, 0, juniorCount, regular, hindi, bold);
-
-        pw.newLine(LEAD_HEADING);
-        pw.drawHRule();
-        pw.newLine(LEAD_HEADING);
-
-        // — Senior Section —
-        pw.writeLine("SECTION B — SENIOR LEVEL  (Q51–Q100)", bold, SIZE_HEADING);
-        pw.newLine(LEAD_HEADING);
-        writePairedBlock(pw, enQuestions, hinQuestions, juniorCount, enQuestions.size(), regular, hindi, bold);
+        writePairedBlock(pw, enQuestions, hinQuestions, 0, enQuestions.size(), regular, hindi, bold);
 
         pw.newLine(LEAD_HEADING);
         pw.drawHRule();
@@ -341,9 +339,13 @@ public class PdfService {
     // -------------------------------------------------------------------------
 
     private String buildFilename(QuestionPaper paper) {
-        return String.format("Set%d_%s_%s.pdf",
+        String typeStr = paper.getPaperType() == null ? "Unknown"
+                : (paper.getPaperType() == com.uttam.paper.model.PaperType.TECHNICAL
+                        ? "Technical" : "NonTechnical");
+        return String.format("Set%d_%s_%s_%s.pdf",
                 paper.getSetNumber(),
                 capitalize(paper.getCategory().name()),
+                typeStr,
                 LocalDate.now().format(FILE_DATE_FMT));
     }
 
@@ -509,9 +511,7 @@ public class PdfService {
 
                 if (needsDevaFont != runNeedsDevaFont && run.length() > 0) {
                     PDFont f = runNeedsDevaFont ? devaFont : latinFont;
-                    cs.beginText(); cs.setFont(f, size); cs.newLineAtOffset(x, cursorY);
-                    cs.showText(run.toString()); cs.endText();
-                    x += safeStringWidth(f, run.toString(), size);
+                    x += safeShowText(f, run.toString(), size, x);
                     run.setLength(0);
                     runNeedsDevaFont = needsDevaFont;
                 }
@@ -520,8 +520,47 @@ public class PdfService {
             }
             if (run.length() > 0) {
                 PDFont f = runNeedsDevaFont ? devaFont : latinFont;
-                cs.beginText(); cs.setFont(f, size); cs.newLineAtOffset(x, cursorY);
-                cs.showText(run.toString()); cs.endText();
+                safeShowText(f, run.toString(), size, x);
+            }
+        }
+
+        /**
+         * Renders text with a font; if the whole string fails, renders character-by-character
+         * substituting '?' for any glyph the font cannot encode.
+         */
+        private float safeShowText(PDFont font, String text, float size, float x) throws IOException {
+            try {
+                cs.beginText();
+                cs.setFont(font, size);
+                cs.newLineAtOffset(x, cursorY);
+                cs.showText(text);
+                cs.endText();
+                return safeStringWidth(font, text, size);
+            } catch (IllegalStateException | IOException e) {
+                // Font missing one or more glyphs — render char-by-char with fallback
+                float xOff = x;
+                for (int i = 0; i < text.length(); ) {
+                    int cp = text.codePointAt(i);
+                    i += Character.charCount(cp);
+                    String ch = new String(Character.toChars(cp));
+                    try {
+                        cs.beginText();
+                        cs.setFont(font, size);
+                        cs.newLineAtOffset(xOff, cursorY);
+                        cs.showText(ch);
+                        cs.endText();
+                        xOff += safeStringWidth(font, ch, size);
+                    } catch (Exception ex) {
+                        // Replace with '?' — advance by estimated width
+                        cs.beginText();
+                        cs.setFont(font, size);
+                        cs.newLineAtOffset(xOff, cursorY);
+                        cs.showText("?");
+                        cs.endText();
+                        xOff += size * 0.6f;
+                    }
+                }
+                return xOff - x;
             }
         }
 
@@ -639,16 +678,47 @@ public class PdfService {
 
         private String sanitise(String s) {
             if (s == null) return "";
-            // Allow printable ASCII and Devanagari Unicode block (U+0900–U+097F)
-            // Replace only truly unprintable/control characters
-            return s.chars()
-                    .mapToObj(c -> {
-                        if (c >= 32 && c < 127) return String.valueOf((char) c);       // ASCII printable
-                        if (c >= 0x0900 && c <= 0x097F) return String.valueOf((char) c); // Devanagari
-                        if (c >= 0x0020) return String.valueOf((char) c);              // other Unicode printable
-                        return "";                                                       // strip control chars
-                    })
-                    .collect(Collectors.joining());
+            StringBuilder sb = new StringBuilder(s.length() + 4);
+            for (int i = 0; i < s.length(); ) {
+                int cp = s.codePointAt(i);
+                i += Character.charCount(cp);
+                if (cp < 32) continue;                     // strip control chars
+                String replacement = MATH_ASCII.get(cp);
+                if (replacement != null) { sb.append(replacement); continue; }
+                sb.appendCodePoint(cp);
+            }
+            return sb.toString();
+        }
+
+        // Common math/special Unicode → ASCII equivalents that keep meaning clear in exam context
+        private static final java.util.Map<Integer, String> MATH_ASCII;
+        static {
+            java.util.Map<Integer, String> m = new java.util.HashMap<>();
+            m.put(0x221A, "sqrt");    // √
+            m.put(0x221E, "inf");     // ∞
+            m.put(0x03C0, "pi");      // π
+            m.put(0x2211, "Sum");     // ∑
+            m.put(0x222B, "integral");// ∫
+            m.put(0x2264, "<=");      // ≤
+            m.put(0x2265, ">=");      // ≥
+            m.put(0x2260, "!=");      // ≠
+            m.put(0x2248, "~=");      // ≈
+            m.put(0x00D7, "x");       // × (multiplication)
+            m.put(0x00F7, "/");       // ÷
+            m.put(0x00B2, "^2");      // ²
+            m.put(0x00B3, "^3");      // ³
+            m.put(0x00BD, "1/2");     // ½
+            m.put(0x00BC, "1/4");     // ¼
+            m.put(0x00BE, "3/4");     // ¾
+            m.put(0x2019, "'");       // ' right single quote
+            m.put(0x2018, "'");       // ' left single quote
+            m.put(0x201C, "\"");      // " left double quote
+            m.put(0x201D, "\"");      // " right double quote
+            m.put(0x2014, "--");      // — em dash
+            m.put(0x2013, "-");       // – en dash
+            m.put(0x2022, "*");       // • bullet
+            m.put(0x2026, "...");     // … ellipsis
+            MATH_ASCII = java.util.Collections.unmodifiableMap(m);
         }
     }
 }

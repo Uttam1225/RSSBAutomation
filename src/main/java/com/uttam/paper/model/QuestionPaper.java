@@ -20,11 +20,14 @@ import java.util.Map;
 @AllArgsConstructor
 public class QuestionPaper {
 
-    /** Identifies the set number of this paper (e.g., Set A = 1, Set B = 2) */
+    /** Identifies the set number (1–4) */
     private int setNumber;
 
-    /** Category of the paper: JUNIOR or SENIOR */
+    /** Role level: JUNIOR or SENIOR */
     private Category category;
+
+    /** Paper type: TECHNICAL or NON_TECHNICAL */
+    private PaperType paperType;
 
     /** List of questions in this paper */
     @Builder.Default

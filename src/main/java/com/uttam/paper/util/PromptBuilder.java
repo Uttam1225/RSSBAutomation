@@ -1,6 +1,8 @@
 package com.uttam.paper.util;
 
+import com.uttam.paper.model.Category;
 import com.uttam.paper.model.NotificationData;
+import com.uttam.paper.model.PaperType;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -10,79 +12,52 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Builds a deterministic-but-unique prompt for the Gemini API.
+ * Builds a role- and type-aware prompt for the Gemini API.
  *
- * <p>Each call produces a prompt that:
+ * <p>The 4 sets generated per run are:
  * <ul>
- *   <li>Instructs Gemini to generate questions in both English and Hindi (bilingual)</li>
- *   <li>Follows the 2022 RSSB exam format (100 MCQs, 4 options each)</li>
- *   <li>Produces 4 distinct sets (Set 1–4)</li>
- *   <li>Covers both Junior and Senior level difficulty</li>
- *   <li>Embeds today's date + a UUID seed to guarantee uniqueness across runs</li>
- *   <li>Explicitly instructs the model not to repeat previous questions</li>
+ *   <li>Set 1 — Junior  / Non-Technical</li>
+ *   <li>Set 2 — Junior  / Technical</li>
+ *   <li>Set 3 — Senior  / Non-Technical</li>
+ *   <li>Set 4 — Senior  / Technical</li>
  * </ul>
  */
 @Slf4j
 @Component
 public class PromptBuilder {
 
-    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("dd-MM-yyyy");
-
-    private static final int SETS          = 4;
-    private static final int QUESTIONS_PER_SET = 100;
-    private static final int OPTIONS_PER_Q  = 4;
+    private static final DateTimeFormatter DATE_FMT       = DateTimeFormatter.ofPattern("dd-MM-yyyy");
+    private static final int               QUESTIONS_PER_SET = 100;
+    private static final int               OPTIONS_PER_Q     = 4;
 
     // -------------------------------------------------------------------------
     // Public API
     // -------------------------------------------------------------------------
 
     /**
-     * Builds a prompt for a SINGLE set (used when calling Gemini once per set).
+     * Builds a prompt for a single set identified by role and paper type.
      *
-     * @param data      parsed notification
-     * @param setNumber which set to generate (1–4)
+     * @param data      parsed notification data
+     * @param setNumber set number (1–4)
+     * @param role      JUNIOR or SENIOR
+     * @param type      TECHNICAL or NON_TECHNICAL
      * @return ready-to-send prompt string
      */
-    public String buildForSet(NotificationData data, int setNumber) {
+    public String buildForSet(NotificationData data, int setNumber, Category role, PaperType type) {
         String date = LocalDate.now().format(DATE_FMT);
         String seed = UUID.randomUUID().toString();
 
-        log.info("Building prompt | date={} | seed={} | set={} | title={}", date, seed, setNumber, data.getTitle());
+        log.info("Building prompt | date={} | seed={} | set={} | role={} | type={} | title={}",
+                date, seed, setNumber, role, type, data.getTitle());
 
         return new StringBuilder()
-                .append(uniquenessHeader(date, seed, setNumber))
+                .append(uniquenessHeader(date, seed, setNumber, role, type))
                 .append(bilingualInstruction())
                 .append(examContext(data))
                 .append(examFormatInstruction())
-                .append(singleSetInstruction(setNumber))
-                .append(levelInstruction())
-                .append(keywordInstruction(data.getKeywords()))
-                .append(singleSetOutputFormat(setNumber))
-                .append(singleSetUniquenessFooter())
-                .toString();
-    }
-
-    /**
-     * Builds a prompt for all 4 sets at once (kept for compatibility).
-     *
-     * @param data parsed notification
-     * @return ready-to-send prompt string
-     */
-    public String build(NotificationData data) {
-        String date = LocalDate.now().format(DATE_FMT);
-        String seed = UUID.randomUUID().toString();
-
-        log.info("Building prompt | date={} | seed={} | title={}", date, seed, data.getTitle());
-
-        return new StringBuilder()
-                .append(uniquenessHeader(date, seed, 0))
-                .append(bilingualInstruction())
-                .append(examContext(data))
-                .append(examFormatInstruction())
-                .append(setInstruction())
-                .append(levelInstruction())
-                .append(keywordInstruction(data.getKeywords()))
-                .append(outputFormatInstruction())
+                .append(paperTypeInstruction(role, type, data))
+                .append(keywordInstruction(data.getKeywords(), type))
+                .append(outputFormat(setNumber))
                 .append(uniquenessFooter())
                 .toString();
     }
@@ -91,22 +66,21 @@ public class PromptBuilder {
     // Prompt sections
     // -------------------------------------------------------------------------
 
-    /**
-     * Embeds date + UUID so every prompt is treated as new by the model,
-     * preventing cached / repeated responses.
-     */
-    private String uniquenessHeader(String date, String seed, int setNumber) {
-        String setInfo = setNumber > 0 ? "Set Number      : " + setNumber + "\n" : "";
+    private String uniquenessHeader(String date, String seed, int setNumber,
+                                    Category role, PaperType type) {
         return """
                 === SESSION METADATA (do not include in output) ===
                 Generation Date : %s
                 Unique Seed     : %s
-                %s=====================================================
+                Set Number      : %d
+                Role Level      : %s
+                Paper Type      : %s
+                =====================================================
 
-                """.formatted(date, seed, setInfo);
+                """.formatted(date, seed, setNumber,
+                role.name(), type.name().replace('_', ' '));
     }
 
-    /** Instructs the model to produce every question in both English and Hindi. */
     private String bilingualInstruction() {
         return """
                 BILINGUAL FORMAT — MANDATORY — Follow this EXACTLY for every single question:
@@ -127,7 +101,6 @@ public class PromptBuilder {
                 """;
     }
 
-    /** Injects notification title, syllabus, and exam pattern as context. */
     private String examContext(NotificationData data) {
         return """
                 EXAM CONTEXT:
@@ -141,127 +114,130 @@ public class PromptBuilder {
                 nullSafe(data.getExamPattern()));
     }
 
-    /** Specifies the 2022 RSSB exam format rules. */
     private String examFormatInstruction() {
         return """
-                EXAM FORMAT (RSSB 2022 Standard):
-                - Total questions per set : %d MCQs
-                - Options per question    : %d (a, b, c, d)
-                - Each question carries   : 1 mark
-                - Negative marking        : 1/3 mark deducted for wrong answer
-                - Time allowed            : 2 hours
-                - Question types          : factual, conceptual, application-based
+                EXAM FORMAT (RSSB Standard):
+                - Total questions per paper : %d MCQs
+                - Options per question      : %d (a, b, c, d)
+                - Each question carries     : 1 mark
+                - Negative marking          : 1/3 mark deducted for wrong answer
+                - Time allowed             : 2 hours
 
                 """.formatted(QUESTIONS_PER_SET, OPTIONS_PER_Q);
     }
 
-    /** Instructs generation of 4 unique sets. */
-    private String setInstruction() {
+    /**
+     * Core instruction section — varies by role (JUNIOR/SENIOR) and type (TECHNICAL/NON_TECHNICAL).
+     */
+    private String paperTypeInstruction(Category role, PaperType type, NotificationData data) {
+        String roleDesc   = roleDescription(role);
+        String topicBlock = topicBlock(role, type, data);
+
         return """
+                PAPER SPECIFICATION:
+                Role Level : %s
+                Paper Type : %s
+
+                %s
+                %s
+
                 SET INSTRUCTION:
-                - Generate exactly %d complete sets of question papers: Set 1, Set 2, Set 3, Set 4.
-                - Each set must contain %d unique questions.
-                - Questions must NOT be repeated across sets.
-                - Clearly label each set with a header:
-                    === SET <N> ===
+                - Generate exactly 1 complete question paper for this role and type.
+                - The paper must contain exactly %d unique questions numbered Q1 to Q%d.
+                - ALL questions must be appropriate for the %s role at %s level.
+                - Questions must NOT overlap with any other set in this run.
 
-                """.formatted(SETS, QUESTIONS_PER_SET);
+                """.formatted(
+                role.name(),
+                type.name().replace('_', ' '),
+                roleDesc,
+                topicBlock,
+                QUESTIONS_PER_SET, QUESTIONS_PER_SET,
+                type.name().replace('_', ' ').toLowerCase(),
+                role.name().toLowerCase());
     }
 
-    /** Instructs the model to include both Junior and Senior difficulty levels. */
-    private String levelInstruction() {
-        return """
-                DIFFICULTY LEVEL:
-                - Within each set, include:
-                    * 50 JUNIOR level questions  — foundational knowledge, direct recall
-                    * 50 SENIOR level questions  — analytical, applied, higher-order thinking
-                - Clearly mark each question block:
-                    [JUNIOR LEVEL]
-                    [SENIOR LEVEL]
-
-                """;
+    private String roleDescription(Category role) {
+        return switch (role) {
+            case JUNIOR -> """
+                    JUNIOR LEVEL GUIDELINES:
+                    - Questions should test foundational knowledge and basic understanding.
+                    - Use direct recall, straightforward application, and simple reasoning.
+                    - Suitable for a candidate with basic qualification and 0-3 years experience.
+                    - Avoid highly complex, multi-step, or advanced analytical questions.""";
+            case SENIOR -> """
+                    SENIOR LEVEL GUIDELINES:
+                    - Questions should test advanced knowledge, analysis, and critical thinking.
+                    - Include application-based, scenario-based, and higher-order thinking questions.
+                    - Suitable for a candidate with 5+ years experience or higher qualification.
+                    - Include multi-concept, policy-level, and managerial-level questions where relevant.""";
+        };
     }
 
-    /** Appends syllabus keywords to guide topic coverage. */
-    private String keywordInstruction(List<String> keywords) {
-        if (keywords == null || keywords.isEmpty()) {
-            return "";
-        }
+    private String topicBlock(Category role, PaperType type, NotificationData data) {
+        return switch (type) {
+            case NON_TECHNICAL -> """
+                    NON-TECHNICAL TOPICS (General Ability & Knowledge):
+                    Cover a broad mix of the following topics:
+                    1. History, Art & Culture of Rajasthan
+                    2. Geography of Rajasthan (rivers, lakes, districts, climate)
+                    3. General Science (Physics, Chemistry, Biology — Class X level)
+                    4. Current Affairs (Rajasthan & National — last 1 year)
+                    5. Indian Constitution & Polity
+                    6. Economy of Rajasthan & India
+                    7. Logical Reasoning & Analytical Ability
+                    8. Data Interpretation (charts, tables, graphs)
+                    9. Basic Numeracy & Number Systems (Class X level)
+                    10. Decision Making & Problem Solving
+                    Ensure all 100 questions are purely general/non-technical in nature.""";
+            case TECHNICAL -> """
+                    TECHNICAL TOPICS (Job-Specific Knowledge):
+                    The technical questions must be directly relevant to the post: %s
+                    Derive technical topics from the syllabus provided above.
+                    Typical technical areas include (adapt to the specific post):
+                    - Core subject knowledge required for the post
+                    - Relevant laws, rules, policies, and procedures
+                    - Tools, methods, and practices used in the role
+                    - Domain-specific terminology and concepts
+                    - Applied problem-solving in the job domain
+                    Ensure all 100 questions are technical and job-specific for this post.
+                    Do NOT include general knowledge, history, or geography questions."""
+                    .formatted(nullSafe(data.getTitle()));
+        };
+    }
+
+    private String keywordInstruction(List<String> keywords, PaperType type) {
+        if (keywords == null || keywords.isEmpty()) return "";
+        if (type == PaperType.NON_TECHNICAL) return "";   // general topics don't need keyword steering
         return """
-                TOPIC COVERAGE:
-                Ensure questions cover a wide range of the following topics and keywords:
+                ADDITIONAL TOPIC KEYWORDS (from notification):
                 %s
 
                 """.formatted(String.join(", ", keywords));
     }
 
-    /** Specifies the expected output structure. */
-    private String outputFormatInstruction() {
-        return """
-                OUTPUT FORMAT:
-                - Start directly with === SET 1 ===
-                - Number questions sequentially within each set: Q1, Q2, … Q%d
-                - After all 4 sets, add a section:
-                    === ANSWER KEY ===
-                    Set 1: Q1-(x), Q2-(x), …
-                    Set 2: Q1-(x), Q2-(x), …
-                    (and so on for Set 3 and Set 4)
-                - Do NOT include any preamble, explanation, or closing remarks outside the sets.
-
-                """.formatted(QUESTIONS_PER_SET);
-    }
-
-    /** Instructs generation of a single set. */
-    private String singleSetInstruction(int setNumber) {
-        return """
-                SET INSTRUCTION:
-                - Generate exactly 1 complete question paper: Set %d.
-                - The set must contain exactly %d unique questions numbered Q1 to Q%d.
-                - Clearly label the set with the header:
-                    === SET %d ===
-
-                """.formatted(setNumber, QUESTIONS_PER_SET, QUESTIONS_PER_SET, setNumber);
-    }
-
-    /** Output format for a single set with its answer key. */
-    private String singleSetOutputFormat(int setNumber) {
+    private String outputFormat(int setNumber) {
         return """
                 OUTPUT FORMAT:
                 - Start directly with === SET %d ===
-                - Then [JUNIOR LEVEL] followed by Q1 to Q50
-                - Then [SENIOR LEVEL] followed by Q51 to Q100
-                - Number questions sequentially: Q1, Q2, … Q%d
+                - Number questions sequentially: Q1, Q2, ... Q%d
                 - After all %d questions, add the answer key:
                     === ANSWER KEY ===
-                    Set %d: Q1-(x), Q2-(x), Q3-(x), … Q%d-(x)
+                    Set %d: Q1-(x), Q2-(x), Q3-(x), ... Q%d-(x)
                 - Do NOT include any preamble, explanation, or closing remarks.
 
-                """.formatted(setNumber, QUESTIONS_PER_SET, QUESTIONS_PER_SET, setNumber, QUESTIONS_PER_SET);
+                """.formatted(setNumber, QUESTIONS_PER_SET, QUESTIONS_PER_SET,
+                              setNumber, QUESTIONS_PER_SET);
     }
 
-    /** Uniqueness footer for single-set prompts. */
-    private String singleSetUniquenessFooter() {
-        return """
-                UNIQUENESS REQUIREMENT (MANDATORY):
-                - Do NOT repeat any previous questions from any prior session or generation.
-                - All %d questions in this set must be completely original and distinct.
-                - If a topic was covered before, approach it from a different angle or context.
-                - Violation of this rule renders the output invalid.
-                """.formatted(QUESTIONS_PER_SET);
-    }
-
-    /**
-     * Final uniqueness instruction — explicitly tells the model not to reuse
-     * questions from any prior generation.
-     */
     private String uniquenessFooter() {
         return """
                 UNIQUENESS REQUIREMENT (MANDATORY):
-                - Do NOT repeat any previous questions from any prior session or generation.
-                - All %d questions across all %d sets must be completely original and distinct.
+                - Do NOT repeat any question from any prior generation session.
+                - All %d questions must be completely original and distinct.
                 - If a topic was covered before, approach it from a different angle or context.
                 - Violation of this rule renders the output invalid.
-                """.formatted(SETS * QUESTIONS_PER_SET, SETS);
+                """.formatted(QUESTIONS_PER_SET);
     }
 
     // -------------------------------------------------------------------------
