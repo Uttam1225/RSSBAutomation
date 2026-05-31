@@ -1,4 +1,4 @@
-name: CI — Build & Test
+name: CI — Build & Generate Papers
 
 on:
   push:
@@ -6,10 +6,12 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+  schedule:
+    - cron: '0 0 30 * *'   # 6:00 AM IST = 00:30 UTC daily
 
 jobs:
   build:
-    name: Build & Test
+    name: Build, Test & Generate Papers
     runs-on: ubuntu-latest
 
     steps:
@@ -26,7 +28,6 @@ jobs:
           cache: maven
 
       # ── Create config.properties from repo secret ─────────────────────────────
-      #    Only GEMINI_API_KEY is required. All other values are defaults.
       - name: Create config.properties
         run: |
           mkdir -p src/main/resources
@@ -34,18 +35,84 @@ jobs:
           gemini.api.key=${{ secrets.GEMINI_API_KEY }}
           gemini.api.url=https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent
           output.dir=output/papers
-          schedule.cron=0 0 8 * * *
+          schedule.cron=0 0 6 * * *
           duration.days=90
           EOF
 
+      # ── Decode RSSB notification PDF from secret ──────────────────────────────
+      - name: Restore RSSB notification PDF
+        run: |
+          echo "${{ secrets.NOTIFICATION_PDF_BASE64 }}" | base64 -d > /tmp/RSSB.pdf
+          ls -lh /tmp/RSSB.pdf
+
       # ── Build ─────────────────────────────────────────────────────────────────
       - name: Build with Maven
-        run: mvn clean compile -q
+        run: mvn clean package -DskipTests -q
 
-      # ── Test ──────────────────────────────────────────────────────────────────
-      #    continue-on-error: true because the Spring context test passes as long
-      #    as the app starts; individual paper-generation tests are integration
-      #    tests that require a live Gemini quota and are not blocking.
+      # ── Start application ─────────────────────────────────────────────────────
+      - name: Start Spring Boot app
+        run: |
+          mkdir -p output/papers
+          JAR=$(ls target/*.jar | head -1)
+          nohup java -jar "$JAR" > app.log 2>&1 &
+          echo "APP_PID=$!" >> $GITHUB_ENV
+          echo "Started app with PID $!"
+
+      # ── Wait for app to be ready ──────────────────────────────────────────────
+      - name: Wait for app startup
+        run: |
+          echo "Waiting for app to start..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/actuator/health > /dev/null 2>&1; then
+              echo "App is ready!"
+              break
+            fi
+            sleep 3
+          done
+          # Fallback check
+          curl -sf http://localhost:8080/actuator/health || (cat app.log && exit 1)
+
+      # ── Upload notification PDF ───────────────────────────────────────────────
+      - name: Upload RSSB notification
+        run: |
+          curl -sf -X POST http://localhost:8080/api/uploadNotification \
+            -F "file=@/tmp/RSSB.pdf" \
+            -o /tmp/upload_response.json
+          cat /tmp/upload_response.json
+
+      # ── Trigger paper generation ──────────────────────────────────────────────
+      - name: Generate paper sets
+        run: |
+          echo "Triggering paper generation..."
+          curl -sf http://localhost:8080/api/scheduler/generateNow -o /tmp/gen_response.json || true
+          cat /tmp/gen_response.json || true
+
+      # ── Wait for PDFs to be written ───────────────────────────────────────────
+      - name: Wait for PDF generation
+        run: |
+          echo "Waiting for PDFs to be generated (up to 3 min)..."
+          for i in $(seq 1 36); do
+            COUNT=$(ls output/papers/*.pdf 2>/dev/null | wc -l)
+            echo "Attempt $i: $COUNT PDFs found"
+            if [ "$COUNT" -ge 1 ]; then
+              echo "At least one PDF generated — continuing"
+              break
+            fi
+            sleep 5
+          done
+          ls -lh output/papers/ || true
+
+      # ── Upload generated PDFs as artifacts ────────────────────────────────────
+      - name: Upload generated paper PDFs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-papers-${{ github.run_number }}
+          path: output/papers/*.pdf
+          if-no-files-found: warn
+          retention-days: 30
+
+      # ── Run tests ─────────────────────────────────────────────────────────────
       - name: Run tests
         run: mvn test
         continue-on-error: true
@@ -59,10 +126,6 @@ jobs:
           path: target/surefire-reports/
           retention-days: 7
 
-      # ── Package (JAR) ─────────────────────────────────────────────────────────
-      - name: Package JAR
-        run: mvn package -DskipTests -q
-
       # ── Upload JAR artifact ───────────────────────────────────────────────────
       - name: Upload JAR artifact
         uses: actions/upload-artifact@v4
@@ -71,20 +134,31 @@ jobs:
           path: target/*.jar
           retention-days: 7
 
+      # ── Stop app ──────────────────────────────────────────────────────────────
+      - name: Stop app
+        if: always()
+        run: kill $APP_PID || true
+
       # ── Summary ───────────────────────────────────────────────────────────────
       - name: Write job summary
         if: always()
         run: |
-          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## Build & Generation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          PDF_COUNT=$(ls output/papers/*.pdf 2>/dev/null | wc -l)
+          echo "### 📄 Generated Papers: $PDF_COUNT" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if ls output/papers/*.pdf > /dev/null 2>&1; then
+            echo "| File | Size |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+            for f in output/papers/*.pdf; do
+              SIZE=$(du -sh "$f" | cut -f1)
+              echo "| $(basename $f) | $SIZE |" >> $GITHUB_STEP_SUMMARY
+            done
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Compile | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
-          echo "| Package | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
-          echo "| Tests   | ⚠️ See test-results artifact (integration tests need live Gemini quota) |" >> $GITHUB_STEP_SUMMARY
-          JAR=$(ls target/*.jar 2>/dev/null | head -1)
-          if [ -n "$JAR" ]; then
-            SIZE=$(du -sh "$JAR" | cut -f1)
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "📦 **JAR**: \`$(basename $JAR)\` — $SIZE" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "| Build   | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+          echo "| Papers  | $([ $PDF_COUNT -ge 1 ] && echo '✅' || echo '⚠️') $PDF_COUNT PDFs |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tests   | ⚠️ See test-results artifact |" >> $GITHUB_STEP_SUMMARY
