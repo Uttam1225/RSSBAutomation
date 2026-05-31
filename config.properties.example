@@ -6,7 +6,7 @@ gemini.api.url=https://generativelanguage.googleapis.com/v1/models/gemini-2.5-fl
 output.dir=output/papers
 
 # Scheduler Cron Expression (default: every day at 8:00 AM)
-schedule.cron=0 0 8 * * *
+schedule.cron=0 0 6 * * *
 
 # Duration in Days
 duration.days=90
