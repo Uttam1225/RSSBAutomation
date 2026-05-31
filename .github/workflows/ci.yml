@@ -39,11 +39,11 @@ jobs:
           duration.days=90
           EOF
 
-      # ── Decode RSSB notification PDF from secret ──────────────────────────────
-      - name: Restore RSSB notification PDF
+      # ── Locate RSSB notification PDF (committed to repo under data/) ────────────
+      - name: Locate RSSB notification PDF
         run: |
-          echo "${{ secrets.NOTIFICATION_PDF_BASE64 }}" | base64 -d > /tmp/RSSB.pdf
-          ls -lh /tmp/RSSB.pdf
+          ls -lh data/RSSB_notification.pdf
+          cp data/RSSB_notification.pdf /tmp/RSSB.pdf
 
       # ── Build ─────────────────────────────────────────────────────────────────
       - name: Build with Maven
