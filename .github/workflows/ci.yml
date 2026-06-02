@@ -7,7 +7,7 @@ on:
     branches: [ main ]
   workflow_dispatch:
   schedule:
-    - cron: '0 0 30 * *'   # 6:00 AM IST = 00:30 UTC daily
+    - cron: '30 0 * * *'   # 6:00 AM IST = 00:30 UTC daily
 
 jobs:
   build:
@@ -89,23 +89,28 @@ jobs:
       - name: Generate paper sets
         run: |
           echo "Triggering paper generation..."
-          curl -sf http://localhost:8080/api/scheduler/generateNow -o /tmp/gen_response.json || true
-          cat /tmp/gen_response.json || true
+          curl -sf --max-time 600 http://localhost:8080/api/scheduler/generateNow -o /tmp/gen_response.json
+          cat /tmp/gen_response.json
 
       # ── Wait for PDFs to be written ───────────────────────────────────────────
       - name: Wait for PDF generation
         run: |
-          echo "Waiting for PDFs to be generated (up to 3 min)..."
-          for i in $(seq 1 36); do
+          echo "Waiting for all 4 PDFs to be generated (up to 10 min)..."
+          for i in $(seq 1 120); do
             COUNT=$(ls output/papers/*.pdf 2>/dev/null | wc -l)
             echo "Attempt $i: $COUNT PDFs found"
-            if [ "$COUNT" -ge 1 ]; then
-              echo "At least one PDF generated — continuing"
+            if [ "$COUNT" -ge 4 ]; then
+              echo "All 4 PDFs generated!"
               break
             fi
             sleep 5
           done
+          FINAL_COUNT=$(ls output/papers/*.pdf 2>/dev/null | wc -l)
           ls -lh output/papers/ || true
+          if [ "$FINAL_COUNT" -lt 4 ]; then
+            echo "ERROR: Only $FINAL_COUNT/4 paper sets were generated."
+            exit 1
+          fi
 
       # ── Upload generated PDFs as artifacts ────────────────────────────────────
       - name: Upload generated paper PDFs
@@ -165,5 +170,5 @@ jobs:
           echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Build   | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
-          echo "| Papers  | $([ $PDF_COUNT -ge 1 ] && echo '✅' || echo '⚠️') $PDF_COUNT PDFs |" >> $GITHUB_STEP_SUMMARY
+          echo "| Papers  | $([ $PDF_COUNT -ge 4 ] && echo '✅' || echo '⚠️') $PDF_COUNT/4 PDFs |" >> $GITHUB_STEP_SUMMARY
           echo "| Tests   | ⚠️ See test-results artifact |" >> $GITHUB_STEP_SUMMARY
