@@ -7,33 +7,33 @@ import com.uttam.paper.exception.GeminiApiException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.*;
-import org.springframework.retry.annotation.Backoff;
-import org.springframework.retry.annotation.Recover;
-import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.List;
+
 /**
  * Service for interacting with the Google Gemini API.
  *
- * <p>Sends a text prompt and returns the model's generated response as a String.
- * Uses Spring Retry to handle transient errors with exponential back-off.
- *
- * <p><b>Retry strategy:</b>
- * <ul>
- *   <li>Network / timeout ({@link ResourceAccessException}): retry up to 3× with 5 s → 10 s → 20 s back-off</li>
- *   <li>5xx server errors ({@link HttpServerErrorException}): same</li>
- *   <li>429 Too Many Requests ({@link HttpClientErrorException}): retry up to 3× with 60 s fixed delay</li>
- *   <li>Other 4xx errors: wrapped in {@link GeminiApiException} and NOT retried</li>
- * </ul>
+ * <p><b>Fallback strategy:</b>
+ * <ol>
+ *   <li>Try the primary model. If it returns 429 (quota exhausted), move to the next fallback model.</li>
+ *   <li>On 5xx / network error: retry the same model up to {@value MAX_RETRIES} times with exponential back-off.</li>
+ *   <li>On other 4xx (400, 401, 403…): fail immediately — no retry, no fallback.</li>
+ *   <li>If all configured models are exhausted: return {@code ""} so the caller handles it gracefully.</li>
+ * </ol>
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class GeminiService {
+
+    private static final int    MAX_RETRIES      = 3;
+    private static final long   RETRY_DELAY_MS   = 5_000;  // 5 s initial back-off
+    private static final double RETRY_MULTIPLIER = 2.0;    // → 5 s, 10 s, 20 s
 
     private final RestTemplate restTemplate;
     private final ConfigLoader configLoader;
@@ -41,64 +41,66 @@ public class GeminiService {
     /**
      * Sends {@code prompt} to the Gemini API and returns the generated text.
      *
-     * <p>Retries up to 3 times on network errors, 5xx, or 429 (rate-limit).
-     * 429 uses a fixed 60 s delay (Gemini free tier asks for ~50 s).
-     * Non-429 4xx errors are not retried.
+     * <p>Tries each model URL returned by {@link ConfigLoader#getAllApiUrls()} in order,
+     * falling back on 429 quota errors. Returns {@code ""} if all models fail.
      *
      * @param prompt the text prompt to send
-     * @return generated text from Gemini, never {@code null}
+     * @return generated text, or {@code ""} if all models are exhausted
      */
-    @Retryable(
-        retryFor  = { ResourceAccessException.class, HttpServerErrorException.class,
-                      HttpClientErrorException.class },
-        noRetryFor = { GeminiApiException.class },
-        maxAttempts = 3,
-        backoff   = @Backoff(delay = 60000, multiplier = 1.5)
-    )
     public String generateQuestions(String prompt) {
-        log.info("Calling Gemini API. Prompt length: {} chars", prompt.length());
-
-        String url = buildUrl();
+        List<String> modelUrls = configLoader.getAllApiUrls();
         HttpEntity<GeminiRequest> request = buildRequest(prompt);
 
-        try {
-            ResponseEntity<GeminiResponse> response =
-                    restTemplate.exchange(url, HttpMethod.POST, request, GeminiResponse.class);
+        for (int modelIdx = 0; modelIdx < modelUrls.size(); modelIdx++) {
+            String modelUrl  = modelUrls.get(modelIdx).trim();
+            String modelName = extractModelName(modelUrl);
+            log.info("=== Gemini model {}/{}: {} | prompt {} chars ===",
+                    modelIdx + 1, modelUrls.size(), modelName, prompt.length());
 
-            return parseResponse(response);
+            boolean tryNextModel = false;
 
-        } catch (HttpClientErrorException e) {
-            if (e.getStatusCode() == HttpStatus.TOO_MANY_REQUESTS) {
-                // 429 — rate limited; rethrow so @Retryable can retry with back-off
-                log.warn("Gemini API rate limited (429 TOO_MANY_REQUESTS), will retry after back-off…");
-                throw e;
+            for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+                log.info("Model {} — attempt {}/{}", modelName, attempt, MAX_RETRIES);
+                try {
+                    String url = modelUrl + "?key=" + configLoader.getGeminiApiKey().trim();
+                    ResponseEntity<GeminiResponse> response =
+                            restTemplate.exchange(url, HttpMethod.POST, request, GeminiResponse.class);
+                    return parseResponse(response);
+
+                } catch (HttpClientErrorException e) {
+                    if (e.getStatusCode() == HttpStatus.TOO_MANY_REQUESTS) {
+                        boolean hasNext = modelIdx < modelUrls.size() - 1;
+                        log.warn("Model {} quota exhausted (429){}",
+                                modelName,
+                                hasNext ? " — switching to next fallback model." : " — no more fallback models.");
+                        tryNextModel = true;
+                        break; // stop retrying this model
+
+                    }
+                    // Other 4xx (400, 401, 403…) — not retriable and no fallback
+                    log.error("Gemini client error [{}] on model {}: {}",
+                            e.getStatusCode(), modelName, e.getResponseBodyAsString());
+                    throw new GeminiApiException(
+                            "Gemini API client error: " + e.getStatusCode()
+                                    + " — " + e.getResponseBodyAsString(), e);
+
+                } catch (HttpServerErrorException | ResourceAccessException e) {
+                    log.warn("⟳ Model {} transient error (attempt {}/{}) — {}: {}",
+                            modelName, attempt, MAX_RETRIES,
+                            e.getClass().getSimpleName(), e.getMessage());
+                    if (attempt < MAX_RETRIES) {
+                        sleep(backoffMs(attempt));
+                    } else {
+                        log.warn("Model {} failed after {} attempts — trying next model.", modelName, MAX_RETRIES);
+                        tryNextModel = true;
+                    }
+                }
             }
-            // Other 4xx (400, 401, 403…) — not retried, wrapped in GeminiApiException
-            log.error("Gemini API client error [{}]: {}", e.getStatusCode(), e.getResponseBodyAsString());
-            throw new GeminiApiException("Gemini API client error: " + e.getStatusCode()
-                    + " — " + e.getResponseBodyAsString(), e);
 
-        } catch (HttpServerErrorException e) {
-            // 5xx — will be retried by @Retryable
-            log.warn("Gemini API server error [{}], will retry…", e.getStatusCode());
-            throw e;
-
-        } catch (ResourceAccessException e) {
-            // Timeout / network error — will be retried by @Retryable
-            log.warn("Gemini API connection error, will retry… {}", e.getMessage());
-            throw e;
+            if (!tryNextModel) break; // should not be reached (success already returned)
         }
-    }
 
-    /**
-     * Recovery method invoked after all retry attempts are exhausted.
-     * Returns an empty string so callers can handle gracefully.
-     * Covers: network errors, 5xx errors, and 429 rate-limit after 3 retries.
-     */
-    @Recover
-    public String recoverGenerateQuestions(Exception e, String prompt) {
-        log.error("All Gemini API retry attempts failed for prompt (length={}). Cause: {}",
-                prompt.length(), e.getMessage());
+        log.error("All {}/{} configured Gemini model(s) failed to produce a response.", modelUrls.size(), modelUrls.size());
         return "";
     }
 
@@ -106,22 +108,11 @@ public class GeminiService {
     // Private helpers
     // -------------------------------------------------------------------------
 
-    private String buildUrl() {
-        String baseUrl = configLoader.getGeminiApiUrl().trim();
-        String apiKey  = configLoader.getGeminiApiKey().trim();
-        log.info("Gemini URL (trimmed): {}?key=***", baseUrl);
-        // Append key as query param (Gemini supports both header and query-param auth)
-        return baseUrl + "?key=" + apiKey;
-    }
-
     private HttpEntity<GeminiRequest> buildRequest(String prompt) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE);
-        // Key is sent as ?key= query param in buildUrl() — no Bearer header needed
-
-        GeminiRequest body = GeminiRequest.of(prompt);
-        return new HttpEntity<>(body, headers);
+        return new HttpEntity<>(GeminiRequest.of(prompt), headers);
     }
 
     private String parseResponse(ResponseEntity<GeminiResponse> response) {
@@ -130,18 +121,38 @@ public class GeminiService {
             return "";
         }
 
-        GeminiResponse geminiResponse = response.getBody();
+        GeminiResponse body = response.getBody();
 
-        // Check for prompt blocking
-        if (geminiResponse.getPromptFeedback() != null
-                && geminiResponse.getPromptFeedback().getBlockReason() != null) {
-            log.warn("Gemini blocked the prompt. Reason: {}",
-                    geminiResponse.getPromptFeedback().getBlockReason());
+        if (body.getPromptFeedback() != null && body.getPromptFeedback().getBlockReason() != null) {
+            log.warn("Gemini blocked the prompt. Reason: {}", body.getPromptFeedback().getBlockReason());
             return "";
         }
 
-        String text = geminiResponse.extractText();
-        log.info("Gemini API responded with {} chars", text.length());
+        String text = body.extractText();
+        log.info("Gemini responded with {} chars", text.length());
         return text;
+    }
+
+    /** Extracts model name from URL, e.g. "gemini-2.5-flash" from ".../models/gemini-2.5-flash:generateContent". */
+    private String extractModelName(String url) {
+        try {
+            String path = url.substring(url.lastIndexOf("/models/") + "/models/".length());
+            return path.contains(":") ? path.substring(0, path.indexOf(":")) : path;
+        } catch (Exception e) {
+            return url;
+        }
+    }
+
+    private long backoffMs(int attempt) {
+        return (long) (RETRY_DELAY_MS * Math.pow(RETRY_MULTIPLIER, attempt - 1));
+    }
+
+    private void sleep(long ms) {
+        try {
+            log.info("Waiting {}ms before retry...", ms);
+            Thread.sleep(ms);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
     }
 }

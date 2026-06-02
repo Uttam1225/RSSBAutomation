@@ -34,6 +34,7 @@ jobs:
           cat > src/main/resources/config.properties <<EOF
           gemini.api.key=${{ secrets.GEMINI_API_KEY }}
           gemini.api.url=https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent
+          gemini.fallback.urls=https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent,https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent
           output.dir=output/papers
           schedule.cron=0 0 6 * * *
           duration.days=90
