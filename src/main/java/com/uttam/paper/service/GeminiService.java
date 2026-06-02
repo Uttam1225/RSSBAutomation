@@ -21,6 +21,14 @@ import org.springframework.web.client.RestTemplate;
  *
  * <p>Sends a text prompt and returns the model's generated response as a String.
  * Uses Spring Retry to handle transient errors with exponential back-off.
+ *
+ * <p><b>Retry strategy:</b>
+ * <ul>
+ *   <li>Network / timeout ({@link ResourceAccessException}): retry up to 3× with 5 s → 10 s → 20 s back-off</li>
+ *   <li>5xx server errors ({@link HttpServerErrorException}): same</li>
+ *   <li>429 Too Many Requests ({@link HttpClientErrorException}): retry up to 3× with 60 s fixed delay</li>
+ *   <li>Other 4xx errors: wrapped in {@link GeminiApiException} and NOT retried</li>
+ * </ul>
  */
 @Slf4j
 @Service
@@ -33,17 +41,19 @@ public class GeminiService {
     /**
      * Sends {@code prompt} to the Gemini API and returns the generated text.
      *
-     * <p>Retries up to 3 times on {@link ResourceAccessException} (timeout/network)
-     * or {@link HttpServerErrorException} (5xx), with exponential back-off
-     * starting at 2 s and doubling each attempt (2 s → 4 s → 8 s).
+     * <p>Retries up to 3 times on network errors, 5xx, or 429 (rate-limit).
+     * 429 uses a fixed 60 s delay (Gemini free tier asks for ~50 s).
+     * Non-429 4xx errors are not retried.
      *
      * @param prompt the text prompt to send
      * @return generated text from Gemini, never {@code null}
      */
     @Retryable(
-        retryFor  = { ResourceAccessException.class, HttpServerErrorException.class },
+        retryFor  = { ResourceAccessException.class, HttpServerErrorException.class,
+                      HttpClientErrorException.class },
+        noRetryFor = { GeminiApiException.class },
         maxAttempts = 3,
-        backoff   = @Backoff(delay = 2000, multiplier = 2)
+        backoff   = @Backoff(delay = 60000, multiplier = 1.5)
     )
     public String generateQuestions(String prompt) {
         log.info("Calling Gemini API. Prompt length: {} chars", prompt.length());
@@ -58,7 +68,12 @@ public class GeminiService {
             return parseResponse(response);
 
         } catch (HttpClientErrorException e) {
-            // 4xx errors — not retried (bad request, auth failure, quota exceeded)
+            if (e.getStatusCode() == HttpStatus.TOO_MANY_REQUESTS) {
+                // 429 — rate limited; rethrow so @Retryable can retry with back-off
+                log.warn("Gemini API rate limited (429 TOO_MANY_REQUESTS), will retry after back-off…");
+                throw e;
+            }
+            // Other 4xx (400, 401, 403…) — not retried, wrapped in GeminiApiException
             log.error("Gemini API client error [{}]: {}", e.getStatusCode(), e.getResponseBodyAsString());
             throw new GeminiApiException("Gemini API client error: " + e.getStatusCode()
                     + " — " + e.getResponseBodyAsString(), e);
@@ -78,6 +93,7 @@ public class GeminiService {
     /**
      * Recovery method invoked after all retry attempts are exhausted.
      * Returns an empty string so callers can handle gracefully.
+     * Covers: network errors, 5xx errors, and 429 rate-limit after 3 retries.
      */
     @Recover
     public String recoverGenerateQuestions(Exception e, String prompt) {
