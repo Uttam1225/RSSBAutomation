@@ -89,7 +89,13 @@ jobs:
       - name: Generate paper sets
         run: |
           echo "Triggering paper generation..."
-          curl -sf --max-time 600 http://localhost:8080/api/scheduler/generateNow -o /tmp/gen_response.json
+          curl -sf --max-time 600 http://localhost:8080/api/scheduler/generateNow -o /tmp/gen_response.json || {
+            echo "=== generateNow failed. App log: ==="
+            cat app.log
+            echo "=== Response body: ==="
+            cat /tmp/gen_response.json 2>/dev/null || echo "(no response body)"
+            exit 1
+          }
           cat /tmp/gen_response.json
 
       # ── Wait for PDFs to be written ───────────────────────────────────────────
