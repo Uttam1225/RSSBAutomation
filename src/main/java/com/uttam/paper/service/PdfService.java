@@ -469,11 +469,7 @@ public class PdfService {
             for (String line : lines) {
                 ensureSpace(size + 2);
                 float xOff = first ? MARGIN_LEFT : MARGIN_LEFT + wrapIndent;
-                cs.beginText();
-                cs.setFont(font, size);
-                cs.newLineAtOffset(xOff, cursorY);
-                cs.showText(line);
-                cs.endText();
+                safeShowText(font, line, size, xOff);
                 cursorY -= leading;
                 first = false;
             }
@@ -536,8 +532,13 @@ public class PdfService {
                 cs.showText(text);
                 cs.endText();
                 return safeStringWidth(font, text, size);
-            } catch (IllegalStateException | IOException e) {
-                // Font missing one or more glyphs — render char-by-char with fallback
+            } catch (Exception e) {
+                // Close any open text block before char-by-char fallback —
+                // cs.showText() may throw AFTER cs.beginText() was already written,
+                // leaving the stream in an open text block state.
+                try { cs.endText(); } catch (Exception ignored) {}
+
+                // Render character-by-character, skipping any glyph the font lacks
                 float xOff = x;
                 for (int i = 0; i < text.length(); ) {
                     int cp = text.codePointAt(i);
@@ -551,12 +552,8 @@ public class PdfService {
                         cs.endText();
                         xOff += safeStringWidth(font, ch, size);
                     } catch (Exception ex) {
-                        // Replace with '?' — advance by estimated width
-                        cs.beginText();
-                        cs.setFont(font, size);
-                        cs.newLineAtOffset(xOff, cursorY);
-                        cs.showText("?");
-                        cs.endText();
+                        try { cs.endText(); } catch (Exception ignored) {}
+                        // Skip missing glyph — advance by estimated char width
                         xOff += size * 0.6f;
                     }
                 }
@@ -718,6 +715,23 @@ public class PdfService {
             m.put(0x2013, "-");       // – en dash
             m.put(0x2022, "*");       // • bullet
             m.put(0x2026, "...");     // … ellipsis
+            m.put(0x20B9, "Rs.");     // ₹ Indian Rupee sign
+            m.put(0x00A3, "GBP");     // £ pound
+            m.put(0x00A5, "JPY");     // ¥ yen
+            m.put(0x20AC, "EUR");     // € euro
+            m.put(0x03B1, "alpha");   // α
+            m.put(0x03B2, "beta");    // β
+            m.put(0x03B3, "gamma");   // γ
+            m.put(0x03B4, "delta");   // δ
+            m.put(0x03B8, "theta");   // θ
+            m.put(0x03BB, "lambda");  // λ
+            m.put(0x03BC, "mu");      // μ
+            m.put(0x03C3, "sigma");   // σ
+            m.put(0x03C9, "omega");   // ω
+            m.put(0x00B0, "deg");     // ° degree
+            m.put(0x00B1, "+/-");     // ± plus-minus
+            m.put(0x2032, "'");       // ′ prime
+            m.put(0x2033, "''");      // ″ double prime
             MATH_ASCII = java.util.Collections.unmodifiableMap(m);
         }
     }

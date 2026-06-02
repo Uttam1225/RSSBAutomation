@@ -70,12 +70,20 @@ public class GeminiService {
                 } catch (HttpClientErrorException e) {
                     if (e.getStatusCode() == HttpStatus.TOO_MANY_REQUESTS) {
                         boolean hasNext = modelIdx < modelUrls.size() - 1;
-                        log.warn("Model {} quota exhausted (429){}",
+                        log.warn("Model {} quota exhausted (429) body={} — {}",
                                 modelName,
-                                hasNext ? " — switching to next fallback model." : " — no more fallback models.");
+                                e.getResponseBodyAsString(),
+                                hasNext ? "switching to next fallback model." : "no more fallback models.");
                         tryNextModel = true;
                         break; // stop retrying this model
 
+                    }
+                    if (e.getStatusCode() == HttpStatus.NOT_FOUND) {
+                        // Model not available via this endpoint — try next model
+                        log.warn("Model {} returned 404 (not available): {} — trying next model.",
+                                modelName, e.getResponseBodyAsString());
+                        tryNextModel = true;
+                        break;
                     }
                     // Other 4xx (400, 401, 403…) — not retriable and no fallback
                     log.error("Gemini client error [{}] on model {}: {}",
