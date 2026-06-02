@@ -69,14 +69,26 @@ public class GeminiService {
 
                 } catch (HttpClientErrorException e) {
                     if (e.getStatusCode() == HttpStatus.TOO_MANY_REQUESTS) {
-                        boolean hasNext = modelIdx < modelUrls.size() - 1;
-                        log.warn("Model {} quota exhausted (429) body={} — {}",
-                                modelName,
-                                e.getResponseBodyAsString(),
-                                hasNext ? "switching to next fallback model." : "no more fallback models.");
-                        tryNextModel = true;
-                        break; // stop retrying this model
+                        String body = e.getResponseBodyAsString();
+                        long retryDelayMs = parseRetryDelayMs(body);
+                        boolean isRpmLimit = retryDelayMs <= 65_000; // per-minute = short delay
 
+                        if (isRpmLimit && attempt < MAX_RETRIES) {
+                            // Per-minute throttle — wait for window to reset, then retry same model
+                            log.warn("Model {} RPM limit (429), retryDelay={}ms — waiting before retry (attempt {}/{}).",
+                                    modelName, retryDelayMs, attempt, MAX_RETRIES);
+                            sleep(retryDelayMs + 2_000);
+                            continue; // retry same model
+
+                        } else {
+                            // Daily quota exhausted or RPM retries used up — switch to next model
+                            boolean hasNext = modelIdx < modelUrls.size() - 1;
+                            log.warn("Model {} quota exhausted (429) body={} — {}",
+                                    modelName, body,
+                                    hasNext ? "switching to next fallback model." : "no more fallback models.");
+                            tryNextModel = true;
+                            break;
+                        }
                     }
                     if (e.getStatusCode() == HttpStatus.NOT_FOUND) {
                         // Model not available via this endpoint — try next model
@@ -153,6 +165,19 @@ public class GeminiService {
 
     private long backoffMs(int attempt) {
         return (long) (RETRY_DELAY_MS * Math.pow(RETRY_MULTIPLIER, attempt - 1));
+    }
+
+    /** Parses the retryDelay from a Gemini 429 response body, e.g. {"retryDelay":"1s"}. Returns 60000ms if unparseable. */
+    private long parseRetryDelayMs(String responseBody) {
+        try {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("\"retryDelay\":\\s*\"([0-9.]+)s\"")
+                    .matcher(responseBody);
+            if (m.find()) {
+                return (long) (Double.parseDouble(m.group(1)) * 1000);
+            }
+        } catch (Exception ignored) {}
+        return 60_000; // conservative default
     }
 
     private void sleep(long ms) {
