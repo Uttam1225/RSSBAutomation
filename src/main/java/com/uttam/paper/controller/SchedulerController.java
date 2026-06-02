@@ -46,15 +46,16 @@ public class SchedulerController {
 
     /**
      * GET /api/scheduler/generateNow
-     * Immediately generates papers and PDFs for today, bypassing the schedule.
+     * Kicks off async paper generation for today and returns 202 Accepted immediately.
+     * Poll GET /api/scheduler/status (isRunning) and check PDF count for completion.
      */
     @GetMapping("/generateNow")
     public ResponseEntity<ApiResponse<Map<String, Object>>> generateNow() {
-        log.info("Immediate generation requested for {}", LocalDate.now());
-        List<QuestionPaper> papers = schedulerService.triggerManual(LocalDate.now(), true);
-        return ResponseEntity.ok(ApiResponse.ok(
-                "Papers and PDFs generated successfully for " + LocalDate.now() + ".",
-                buildResultMap(papers, LocalDate.now())));
+        log.info("Async generation requested for {}", LocalDate.now());
+        schedulerService.triggerAsync(LocalDate.now(), true);
+        return ResponseEntity.accepted().body(ApiResponse.ok(
+                "Paper generation started in background for " + LocalDate.now() + ".",
+                Map.of("date", LocalDate.now().toString(), "status", "STARTED")));
     }
 
     /**

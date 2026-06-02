@@ -7,6 +7,7 @@ import com.uttam.paper.model.QuestionPaper;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -99,6 +100,26 @@ public class SchedulerService {
     // -------------------------------------------------------------------------
     // Manual trigger (REST API)
     // -------------------------------------------------------------------------
+
+    /**
+     * Fires paper generation asynchronously in a separate thread.
+     * Returns immediately; use {@link #isJobRunning()} / PDF file count to track completion.
+     */
+    @Async
+    public void triggerAsync(LocalDate date, boolean force) {
+        if (!isRunning.compareAndSet(false, true)) {
+            log.warn("Skipping async trigger for {} — a generation job is already running.", date);
+            return;
+        }
+        try {
+            executeFor(date, force);
+        } catch (Exception e) {
+            log.error("Async generation failed for {}: {}", date, e.getMessage(), e);
+        } finally {
+            isRunning.set(false);
+            log.info("=== Async generation finished for: {} ===", date);
+        }
+    }
 
     /**
      * Manually triggers generation for {@code date}.

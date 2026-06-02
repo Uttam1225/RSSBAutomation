@@ -31,7 +31,7 @@ import java.util.List;
 @RequiredArgsConstructor
 public class GeminiService {
 
-    private static final int    MAX_RETRIES      = 3;
+    private static final int    MAX_RETRIES      = 8;
     private static final long   RETRY_DELAY_MS   = 5_000;  // 5 s initial back-off
     private static final double RETRY_MULTIPLIER = 2.0;    // → 5 s, 10 s, 20 s
 

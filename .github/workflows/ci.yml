@@ -13,6 +13,7 @@ jobs:
   build:
     name: Build, Test & Generate Papers
     runs-on: ubuntu-latest
+    timeout-minutes: 100
 
     steps:
       # ── Checkout ─────────────────────────────────────────────────────────────
@@ -89,30 +90,33 @@ jobs:
       # ── Trigger paper generation ──────────────────────────────────────────────
       - name: Generate paper sets
         run: |
-          echo "Triggering paper generation..."
-          curl -sf --max-time 600 http://localhost:8080/api/scheduler/generateNow -o /tmp/gen_response.json || {
-            echo "=== generateNow failed. App log: ==="
+          echo "Triggering async paper generation..."
+          curl -sf http://localhost:8080/api/scheduler/generateNow -o /tmp/gen_response.json || {
+            echo "=== generateNow call failed. App log: ==="
             cat app.log
-            echo "=== Response body: ==="
-            cat /tmp/gen_response.json 2>/dev/null || echo "(no response body)"
             exit 1
           }
+          echo "Generation started:"
           cat /tmp/gen_response.json
 
       # ── Wait for PDFs to be written ───────────────────────────────────────────
       - name: Wait for PDF generation
         run: |
-          echo "Waiting for all 4 PDFs to be generated (up to 10 min)..."
-          for i in $(seq 1 120); do
+          echo "Waiting for all 4 PDFs to be generated (up to 90 min)..."
+          for i in $(seq 1 1080); do
             COUNT=$(ls output/papers/*.pdf 2>/dev/null | wc -l)
-            echo "Attempt $i: $COUNT PDFs found"
+            if [ $((i % 12)) -eq 0 ]; then
+              echo "[$((i*5))s] $COUNT/4 PDFs so far..."
+            fi
             if [ "$COUNT" -ge 4 ]; then
-              echo "All 4 PDFs generated!"
+              echo "All 4 PDFs generated after $((i*5))s!"
               break
             fi
             sleep 5
           done
           FINAL_COUNT=$(ls output/papers/*.pdf 2>/dev/null | wc -l)
+          echo "=== Final app log tail ==="
+          tail -50 app.log || true
           ls -lh output/papers/ || true
           if [ "$FINAL_COUNT" -lt 4 ]; then
             echo "ERROR: Only $FINAL_COUNT/4 paper sets were generated."
