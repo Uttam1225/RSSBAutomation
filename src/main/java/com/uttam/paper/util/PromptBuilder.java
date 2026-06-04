@@ -267,7 +267,7 @@ public class PromptBuilder {
                    - Control flow: nested loops output prediction, recursion trace
                    - OOP concepts: class, object, inheritance, polymorphism, encapsulation — identify which principle applies
                    - Python basics: list comprehension, string methods, dictionary operations
-                   Sample question style: "What is the output of: int a=5; printf(\"%d %d\", a++, ++a);"
+                   Sample question style: "What is the output of: int a=5; printf(\"%%d %%d\", a++, ++a);"
 
                 7. Data Structures (10 questions)
                    - Stack: push/pop sequence, postfix/prefix expression evaluation step-by-step

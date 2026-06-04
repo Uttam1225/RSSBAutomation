@@ -17,7 +17,7 @@ public class RestTemplateConfig {
     public RestTemplate restTemplate() {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(10_000);   // 10 seconds
-        factory.setReadTimeout(300_000);      // 5 minutes — Gemini needs time for large outputs
+        factory.setReadTimeout(240_000);      // 4 minutes — enough for fallback models on large prompts
         return new RestTemplate(factory);
     }
 

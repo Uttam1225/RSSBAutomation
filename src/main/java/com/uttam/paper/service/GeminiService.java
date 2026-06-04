@@ -31,7 +31,7 @@ import java.util.List;
 @RequiredArgsConstructor
 public class GeminiService {
 
-    private static final int    MAX_RETRIES      = 8;
+    private static final int    MAX_RETRIES      = 3;
     private static final long   RETRY_DELAY_MS   = 5_000;  // 5 s initial back-off
     private static final double RETRY_MULTIPLIER = 2.0;    // → 5 s, 10 s, 20 s
 
@@ -104,7 +104,14 @@ public class GeminiService {
                             "Gemini API client error: " + e.getStatusCode()
                                     + " — " + e.getResponseBodyAsString(), e);
 
-                } catch (HttpServerErrorException | ResourceAccessException e) {
+                } catch (ResourceAccessException e) {
+                    // Network timeout — don't retry same model (wastes quota); switch immediately
+                    log.warn("⟳ Model {} read timeout (attempt {}/{}) — switching to next model immediately.",
+                            modelName, attempt, MAX_RETRIES);
+                    tryNextModel = true;
+                    break;
+
+                } catch (HttpServerErrorException e) {
                     log.warn("⟳ Model {} transient error (attempt {}/{}) — {}: {}",
                             modelName, attempt, MAX_RETRIES,
                             e.getClass().getSimpleName(), e.getMessage());
